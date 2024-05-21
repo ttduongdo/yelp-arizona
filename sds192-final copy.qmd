@@ -1,0 +1,161 @@
+---
+title: "SDS192 Final Project"
+format: html
+editor: visual
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r, message = FALSE, warning = FALSE}
+library(tidyverse)
+library(tidyr)
+library(RMySQL)
+library(leaflet)
+library(dbplyr)
+library(tidygeocoder)
+library(sf)
+library(lubridate)
+library(leafgl)
+library(reader)
+library(RColorBrewer)
+
+db <- dbConnect(
+  MySQL(),
+  host = "scidb.smith.edu",
+  user = "sds192",
+  password = "DSismfc@S"
+)
+knitr::opts_chunk$set(connection = db, max.print = 20)
+
+```
+
+```{sql connection=db, message = FALSE, warning = FALSE}
+USE yelp;
+
+```
+
+
+```{sql connection=db, message = FALSE, warning = FALSE}
+SELECT business_id, SUM(stars) AS sum_stars
+
+FROM reviews
+
+GROUP BY business_id
+
+ORDER BY sum_stars DESC
+
+LIMIT 1000;
+```
+
+```{r, message = FALSE, warning = FALSE}
+# Pull data sets to R
+businesses <- dbGetQuery(conn = db, 
+"SELECT id, name, stars, open, review_count, city, longitude, latitude
+
+FROM businesses;")
+
+rank_reviews <- dbGetQuery(conn = db,
+"SELECT business_id, SUM(stars) AS sum_stars
+
+FROM reviews
+
+GROUP BY business_id
+
+ORDER BY sum_stars DESC
+
+LIMIT 1000;")
+
+# Generate an ID list of top 1000 businesses
+top1000_id <- rank_reviews |> pull(business_id)
+
+# Filter data of top 1000 businesses
+top1000_data <- 
+businesses |> select(id, name, longitude, latitude) |> group_by(id) |> filter(id %in% top1000_id)
+
+# Make location icon
+loc_icon <- makeIcon(
+  iconUrl = "745228.png",
+  iconWidth = 9.6, iconHeight = 9.6,
+  iconAnchorX = 0, iconAnchorY = 0)
+
+# Make leaflet
+leaflet() |>
+  addTiles() |>
+  addMarkers(data = top1000_data,
+             icon = loc_icon) |>
+  addControl("1000 Most Rated Businesses on Yelp, AZ", position = "bottomleft" )
+
+
+```
+
+```{r, message = FALSE, warning = FALSE}
+# Read in extended businesses CSV file
+data <- read_csv("yelp_business.csv")
+
+# Filter state Arizona
+data <- data |> filter(state == "AZ")
+
+# Split column `categories` into separate columns
+data <- data |>
+  separate(categories, 
+           into = c("category_1", "category_2", "category_3", "category_4", "category_5"),
+           sep = ";", fill = "right") 
+
+# Use `pivot_longer()` to transform 
+data_long <- data |> 
+  pivot_longer(cols = starts_with("category"), names_to = "category_index", values_to = "category", values_drop_na = TRUE) |> 
+  select(!category_index)
+
+# Clean column `name`
+removeQuotes <- function(inputString) {
+  cleanedString <- gsub("\"", "", inputString)
+  return(cleanedString)
+}
+
+data_long$name <-  map(data_long$name, ~removeQuotes(.x))
+
+data_long$name <- unlist(data_long$name)
+
+# Make a list of most rated business categories
+list <- data_long |> 
+  select(category, stars, review_count) |> 
+  group_by(category) |> 
+  summarize(total_rankings = sum(stars * review_count)) |>
+  arrange(desc(total_rankings)) |>
+  slice_head(n = 9) |> pull(category)
+
+data_long <- data_long |> filter(category %in% list)
+
+# Save color palette
+colors <- brewer.pal(n = 9, name = "Set1")
+
+# Make plot
+data_long |> 
+  ggplot(aes(x = stars, fill = category)) +
+  geom_bar(position = "stack") +
+  theme_minimal() + 
+  scale_fill_manual(values = colors) + 
+  coord_flip() +
+  labs(title = "Rate Distribution of 9 Most Popular Types of Business on Yelp",
+       x = "Stars",
+       y = "Count",
+       fill = "Types of Business",
+       caption = "Finding the perfect Restaurants on Yelp, Kaggle")
+
+```
+# Blog post
+
+Question: What are the most popular Arizona businesses on Yelp? What types of business are they usually?
+
+Inspired by the original Yelp Open Dataset covering 150,000 businesses all over the US, this project aims to explore a smaller proportion of the data obtained from Kaggle[^1] and Smith College’s server, and find meaningful data on businesses specifically in Arizona. In particular, I wish to see the most rated businesses in Arizona and what category they usually are in. 
+
+After a process of cleaning and wrangling with SQL, the `yelp` data set on Smith’s server was able to give a leaflet visualization on 1000 most popular businesses on Yelp. We can see that most of them are from Phoenix, Scottsdale, and Tempe.
+
+The second figure, generated from the Kaggle data set, gave us more information on which nine categories are most popular in Arizona, and how they are distributed in each level of ratings. The most frequently and generously rated businesses appear to be restaurants, shopping, food, and nightlife. These top businesses are mostly given 4 and 4.5-star ratings in general. 
+
+In conclusion, this exploration of Yelp business data centered on Arizona has unveiled valuable insights into the most popular businesses and their predominant categories in the region. This project offers a spatial perspective and a deeper understanding of the frontrunning businesses of Arizona. However, it is important to note that the two datasets used in this project are not recent and share an inconsistency in businesses’ names and IDs, which may introduce some limitations to the findings.
+
+[^1]:Ullah, N. (2018). Finding the Perfect Restaurants on Yelp. Kaggle. https://www.kaggle.com/code/niyamatalmass/finding-the-perfect-restaurants-on-yelp/input
+
+
+
